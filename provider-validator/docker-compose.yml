@@ -1,0 +1,81 @@
+services:
+  redis:
+    image: redis:7
+    container_name: pv_redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:15
+    container_name: pv_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pvuser
+      POSTGRES_PASSWORD: pvpass
+      POSTGRES_DB: providerdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: pv_api
+    restart: on-failure
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+    ports:
+      - "8000:8000"
+    volumes:
+      # ✅ Mount data and scripts so migration and runtime both see local files
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./scripts:/app/scripts
+    command: uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: pv_worker
+    restart: on-failure
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./scripts:/app/scripts
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pv_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:9
+    container_name: pv_grafana
+    restart: unless-stopped
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+
+volumes:
+  redis_data:
+  postgres_data:
+  grafana_data:

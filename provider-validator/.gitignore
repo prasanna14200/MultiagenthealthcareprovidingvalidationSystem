@@ -1,0 +1,34 @@
+# --- Python / FastAPI ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.log
+
+# --- Virtual Environment ---
+venv/
+.env
+*.env
+
+# --- IDE / Editor Files ---
+.vscode/
+.idea/
+*.swp
+*.bak
+*.tmp
+
+# --- Data & Outputs ---
+data/providers.db
+data/*.csv
+data/*.pdf
+data/*.json
+
+# --- Cache / Artifacts ---
+*.cache/
+celerybeat-schedule
+celerybeat.pid
+
+# --- OS Files ---
+.DS_Store
+Thumbs.db

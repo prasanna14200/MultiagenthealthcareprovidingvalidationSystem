@@ -1,0 +1,41 @@
+# Dockerfile.api - Complete working version
+FROM python:3.12-slim
+
+# Create a non-root user for security
+RUN useradd --create-home --shell /bin/bash appuser
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+# - build-essential, gcc: For compiling Python packages
+# - libpq-dev: PostgreSQL client libraries (needed by psycopg2)
+# - curl, git: Useful utilities
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    libpq-dev \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python dependencies first
+# (This layer is cached if requirements.txt doesn't change)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+# These are copied AFTER dependencies so changes to code don't rebuild dependencies
+COPY src ./src
+COPY data ./data
+COPY scripts ./scripts
+COPY migrations ./migrations
+
+# Expose port 8000 for FastAPI
+EXPOSE 8000
+
+# Switch to non-root user (security best practice)
+USER appuser
+
+# Default command: Start FastAPI with auto-reload (for development)
+CMD ["uvicorn", "src.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
