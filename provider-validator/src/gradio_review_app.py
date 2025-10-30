@@ -1,29 +1,32 @@
-# gradio_review_app.py
+# src/gradio_review_app.py
 import os
-import time
 import requests
-from dotenv import load_dotenv
 import gradio as gr
+from dotenv import load_dotenv
 
 load_dotenv()
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 API_TOKEN = os.environ.get("API_TOKEN", "")
-
 HEADERS = {"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {}
 
-# Helper: fetch pending providers (paginated)
-def fetch_pending(page: int=1, page_size: int=20, q: str=""):
+# -----------------------------
+# Backend helpers
+# -----------------------------
+def fetch_pending(page: int = 1, page_size: int = 20, q: str = "", status: str = "Pending"):
     params = {"page": page, "page_size": page_size}
     if q:
         params["q"] = q
+    # your backend currently ignores 'status' param but we keep it for future
     try:
         r = requests.get(f"{API_URL}/providers/pending", headers=HEADERS, params=params, timeout=10)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        items = data.get("providers") or data.get("data") or []
+        # ensure list
+        return items if isinstance(items, list) else []
     except Exception as e:
-        return {"error": str(e), "data": []}
+        return {"error": str(e)}
 
-# Helper: fetch single provider
 def fetch_provider(provider_id):
     try:
         r = requests.get(f"{API_URL}/providers/{provider_id}", headers=HEADERS, timeout=10)
@@ -32,7 +35,6 @@ def fetch_provider(provider_id):
     except Exception as e:
         return {"error": str(e)}
 
-# Helper: fetch provider history
 def fetch_history(provider_id):
     try:
         r = requests.get(f"{API_URL}/providers/{provider_id}/history", headers=HEADERS, timeout=10)
@@ -41,131 +43,145 @@ def fetch_history(provider_id):
     except Exception as e:
         return {"error": str(e)}
 
-# Helper: patch review (edits + action)
-def submit_review(provider_id, edited_fields: dict, action: str, note: str=""):
-    payload = {
-        "edited_fields": edited_fields,
-        "action": action,   # "approve", "reject", "save" (or "outreach")
-        "note": note
-    }
+def submit_review(provider_id, edited_fields: dict, action: str, note: str = ""):
+    payload = {"edited_fields": edited_fields, "action": action, "note": note}
     try:
         r = requests.patch(f"{API_URL}/providers/{provider_id}/review", json=payload, headers=HEADERS, timeout=10)
         r.raise_for_status()
         return {"ok": True, "result": r.json()}
     except Exception as e:
-        return {"ok": False, "error": str(e), "status_code": getattr(e, "response", None)}
+        return {"ok": False, "error": str(e)}
 
+# -----------------------------
 # Gradio callbacks
-def load_pending(page=1, q=""):
-    resp = fetch_pending(page=page, q=q)
-    if "error" in resp:
-        return gr.update(value=""), [], "Error: " + resp["error"]
-    items = resp.get("data", [])
-    # show simple list entries: "ID - name - specialty"
-    options = [f"{it['id']} | {it.get('name','-')} | {it.get('specialty','-')}" for it in items]
-    return gr.update(value=""), options, f"Page {page} — {len(options)} items"
+# -----------------------------
+def load_pending(page=1, q="", status="Pending"):
+    """
+    Returns three outputs: search_value_update, dropdown_update, status_message
+    Use gr.update(...) to update components so Gradio preprocessing won't reject values.
+    """
+    resp = fetch_pending(page=page, page_size=50, q=q, status=status)
+    if isinstance(resp, dict) and "error" in resp:
+        return gr.update(value=q), gr.update(choices=[], value=None), f"⚠️ Error loading providers: {resp['error']}"
+
+    items = resp  # should be a list
+    options = [f"{p['id']} | {p.get('name','-')} | {p.get('specialty','-')}" for p in items]
+
+    if not options:
+        return gr.update(value=q), gr.update(choices=[], value=None), "ℹ️ No pending providers found."
+
+    # Update dropdown choices and set value to None (no selection) to avoid preprocess rejection
+    return gr.update(value=q), gr.update(choices=options, value=None), f"✅ Loaded {len(options)} pending providers."
 
 def on_select_provider(selection):
+    # defensive: selection may be list or str
     if not selection:
-        return {}, "", "", []
+        return {}, "", "⚠️ No provider selected.", []
+    if isinstance(selection, list):
+        selection = selection[0] if selection else ""
+    if not selection or "|" not in selection:
+        return {}, "", "⚠️ Invalid selection.", []
     provider_id = selection.split("|")[0].strip()
+    if not provider_id.isdigit():
+        return {}, "", "⚠️ Invalid provider id.", []
+
     data = fetch_provider(provider_id)
-    if "error" in data:
-        return {}, "", f"Error: {data['error']}", []
-    # Populate editable form fields
+    if isinstance(data, dict) and "error" in data:
+        return {}, "", f"⚠️ Error fetching provider: {data['error']}", []
+
+    # Build editable fields
     fields = {
         "id": data.get("id"),
-        "name": data.get("name",""),
-        "phone": data.get("phone",""),
-        "email": data.get("email",""),
-        "address": data.get("address",""),
-        "specialty": data.get("specialty",""),
+        "name": data.get("name", ""),
+        "phone": data.get("phone", ""),
+        "email": data.get("email", ""),
+        "address": data.get("address", ""),
+        "specialty": data.get("specialty", ""),
         "confidence": data.get("final_confidence", None),
-        "validation": data.get("validation_results", {})
+        "flags": data.get("flags", []),
     }
+
     history = fetch_history(provider_id)
     history_text = history if isinstance(history, dict) else {"history": history}
-    return fields, f"Provider ID: {provider_id}", "", history_text
+
+    return fields, f"👤 Provider ID: {provider_id}", "", history_text
 
 def save_edits(fields, note):
-    # fields is a dict (Gradio sends it as JSON-like)
-    provider_id = fields.get("id")
-    edited = {k: fields[k] for k in ("phone","email","address","specialty") if k in fields}
-    res = submit_review(provider_id, edited, action="save", note=note or "")
-    if res.get("ok"):
-        return "Saved successfully."
-    return f"Error saving: {res.get('error')}"
+    pid = fields.get("id") if isinstance(fields, dict) else None
+    if not pid:
+        return "⚠️ No provider selected."
+    edited = {k: fields[k] for k in ("phone", "email", "address", "specialty") if fields.get(k)}
+    res = submit_review(pid, edited, action="save", note=note or "")
+    return "💾 Saved successfully!" if res.get("ok") else f"❌ Error: {res.get('error')}"
 
 def approve_provider(fields, note):
-    provider_id = fields.get("id")
-    res = submit_review(provider_id, {}, action="approve", note=note or "")
-    if res.get("ok"):
-        return "Provider approved."
-    return f"Error approving: {res.get('error')}"
+    pid = fields.get("id") if isinstance(fields, dict) else None
+    if not pid:
+        return "⚠️ No provider selected."
+    res = submit_review(pid, {}, "approve", note or "")
+    return "✅ Provider approved." if res.get("ok") else f"❌ Error: {res.get('error')}"
 
 def reject_provider(fields, note):
-    provider_id = fields.get("id")
-    res = submit_review(provider_id, {}, action="reject", note=note or "")
-    if res.get("ok"):
-        return "Provider rejected."
-    return f"Error rejecting: {res.get('error')}"
+    pid = fields.get("id") if isinstance(fields, dict) else None
+    if not pid:
+        return "⚠️ No provider selected."
+    res = submit_review(pid, {}, "reject", note or "")
+    return "🚫 Provider rejected." if res.get("ok") else f"❌ Error: {res.get('error')}"
 
 def send_outreach(fields, note):
-    provider_id = fields.get("id")
-    res = submit_review(provider_id, {}, action="outreach", note=note or "")
-    if res.get("ok"):
-        return "Outreach queued."
-    return f"Error queueing outreach: {res.get('error')}"
+    pid = fields.get("id") if isinstance(fields, dict) else None
+    if not pid:
+        return "⚠️ No provider selected."
+    res = submit_review(pid, {}, "outreach", note or "")
+    return "📧 Outreach queued." if res.get("ok") else f"❌ Error: {res.get('error')}"
 
-# Build Gradio interface
-with gr.Blocks(title="Provider Manual Review") as demo:
-    gr.Markdown("## Provider Manual Review Dashboard")
+# -----------------------------
+# Gradio UI
+# -----------------------------
+with gr.Blocks(
+    title="Provider Review Dashboard",
+    theme=gr.themes.Soft(primary_hue="indigo", secondary_hue="blue", neutral_hue="slate"),
+    css="""
+    #status {font-weight: bold; color: #1E40AF;}
+    .gr-button {border-radius: 10px !important; font-weight: 600;}
+    .gr-textbox, .gr-dropdown, .gr-number {border-radius: 8px !important;}
+    body {background: linear-gradient(135deg, #eef2ff, #ffffff);}
+    """
+) as demo:
+    gr.Markdown("# 🌈 Provider Manual Review Dashboard")
+    gr.Markdown("Review, edit and approve flagged or low-confidence providers.")
+
     with gr.Row():
         with gr.Column(scale=1):
-            search = gr.Textbox(label="Search (name, specialty, NPI...)", placeholder="type and press Load")
-            load_btn = gr.Button("Load Pending")
-            pending_list = gr.Dropdown(label="Pending providers", choices=[], interactive=True)
-            status = gr.Markdown("")
+            search = gr.Textbox(label="🔍 Search", placeholder="Name, specialty or NPI...")
+            review_choices = ["Pending", "Flagged", "Low Confidence", "All"]
+            status_dropdown = gr.Dropdown(label="Filter by Status", choices=review_choices, value="Pending", allow_custom_value=False)
+            load_btn = gr.Button("🔄 Load Providers", variant="primary")
+            pending_list = gr.Dropdown(label="Select Provider", choices=[], interactive=True, multiselect=False, allow_custom_value=True)
+            status = gr.Markdown("", elem_id="status")
+
         with gr.Column(scale=2):
-            provider_info = gr.JSON(value={}, label="Provider (editable) - edit fields below then Save/Approve")
-            # Individual editable fields for nicer UX
+            provider_info = gr.JSON(value={}, label="Provider Record (editable)")
             name_field = gr.Textbox(label="Name")
             phone_field = gr.Textbox(label="Phone")
             email_field = gr.Textbox(label="Email")
             address_field = gr.Textbox(label="Address")
             specialty_field = gr.Textbox(label="Specialty")
-            confidence_field = gr.Number(label="Confidence", interactive=False)
-            note_field = gr.Textbox(label="Reviewer note", lines=3, placeholder="Optional note for history")
-            btn_save = gr.Button("Save edits")
-            btn_approve = gr.Button("Approve")
-            btn_reject = gr.Button("Reject")
-            btn_outreach = gr.Button("Send Outreach")
+            confidence_field = gr.Number(label="Final Confidence", interactive=False)
+            note_field = gr.Textbox(label="Reviewer Note", lines=3)
+            with gr.Row():
+                btn_save = gr.Button("💾 Save", variant="secondary")
+                btn_approve = gr.Button("✅ Approve", variant="primary")
+                btn_reject = gr.Button("🚫 Reject", variant="stop")
+                btn_outreach = gr.Button("📧 Outreach", variant="secondary")
             result_area = gr.Textbox(label="Result", interactive=False)
+
         with gr.Column(scale=1):
-            history_area = gr.JSON(value={}, label="Change History / Validation Results")
+            history_area = gr.JSON(value={}, label="📜 Change History / Flags")
 
-    # Wire actions
-    load_btn.click(load_pending, inputs=[gr.Number(value=1, visible=False), search], outputs=[search, pending_list, status])
-    pending_list.change(on_select_provider, inputs=[pending_list], outputs=[provider_info, status, result_area, history_area])
-
-    # Map JSON provider_info to individual form fields on select
-    def map_json_to_fields(js):
-        return js.get("name",""), js.get("phone",""), js.get("email",""), js.get("address",""), js.get("specialty",""), js.get("confidence",None)
-    provider_info.change(lambda js: map_json_to_fields(js), inputs=[provider_info],
-                         outputs=[name_field, phone_field, email_field, address_field, specialty_field, confidence_field])
-
-    # Map field edits back to provider_info JSON
-    def collect_to_json(name, phone, email, address, specialty, confidence, old_json):
-        new = old_json.copy() if isinstance(old_json, dict) else {}
-        new.update({"name": name, "phone": phone, "email": email, "address": address, "specialty": specialty, "final_confidence": confidence})
-        return new
-
-    name_field.change(collect_to_json, inputs=[name_field, phone_field, email_field, address_field, specialty_field, confidence_field, provider_info], outputs=[provider_info])
-    phone_field.change(collect_to_json, inputs=[name_field, phone_field, email_field, address_field, specialty_field, confidence_field, provider_info], outputs=[provider_info])
-    email_field.change(collect_to_json, inputs=[name_field, phone_field, email_field, address_field, specialty_field, confidence_field, provider_info], outputs=[provider_info])
-    address_field.change(collect_to_json, inputs=[name_field, phone_field, email_field, address_field, specialty_field, confidence_field, provider_info], outputs=[provider_info])
-    specialty_field.change(collect_to_json, inputs=[name_field, phone_field, email_field, address_field, specialty_field, confidence_field, provider_info], outputs=[provider_info])
-
+    # Bind actions
+    load_btn.click(fn=load_pending, inputs=[gr.Number(value=1, visible=False), search, status_dropdown], outputs=[search, pending_list, status])
+    pending_list.change(fn=on_select_provider, inputs=[pending_list], outputs=[provider_info, status, result_area, history_area])
     btn_save.click(save_edits, inputs=[provider_info, note_field], outputs=[result_area])
     btn_approve.click(approve_provider, inputs=[provider_info, note_field], outputs=[result_area])
     btn_reject.click(reject_provider, inputs=[provider_info, note_field], outputs=[result_area])
