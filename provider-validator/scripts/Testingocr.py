@@ -3,11 +3,13 @@ import pytesseract
 import re
 
 
+import pytesseract
 
+pytesseract.pytesseract.tesseract_cmd = r"E:\tesse\tesseract.exe"
 pdf_path = "data/scanned_pdfs/sample_1.pdf"
 
 # Convert PDF to images
-pages = convert_from_path(pdf_path, dpi=200)
+pages = convert_from_path(pdf_path, dpi=200, poppler_path=r"D:\Downloads\Release-25.12.0-0\poppler-25.12.0\Library\bin")
 
 # Extract text from first page
 text = pytesseract.image_to_string(pages[0])

@@ -1,8 +1,9 @@
 # src/db.py
 import sqlite3
 from typing import Any, Dict, List
+import os
 
-DB_PATH = "data/providers.db"
+DB_PATH = os.path.abspath(os.getenv("DB_PATH", "data/providers.db"))
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -47,6 +48,11 @@ def fetch_all(limit: int = 100) -> List[Dict[str, Any]]:
     keys = ["rowid","source_id","name","npi","phone","address","website","specialty","source_json","confidence","flags","status"]
     return [dict(zip(keys, r)) for r in rows]
 
+
+def get_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def fetch_provider_by_id(provider_id):

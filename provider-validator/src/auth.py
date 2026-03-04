@@ -14,15 +14,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Config
-SECRET_KEY = os.getenv("JWT_SECRET", "replace-this-with-a-secure-random-string")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+SECRET_KEY=os.getenv("SECRET_KEY", "default-secret-key-change-in-production")
+ALGORITHM=os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES=int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 router = APIRouter()
 
-DB_PATH = os.getenv("DB_PATH", "data/providers.db")
+USER_DB_PATH = os.getenv("USER_DB_PATH", "data/users.db")
 
 # Pydantic models
 class Token(BaseModel):
@@ -41,13 +41,13 @@ class UserInDB(BaseModel):
 
 # --- DB helpers (simple sqlite helpers)
 def get_db_conn():
-    return sqlite3.connect(DB_PATH)
+    return sqlite3.connect(USER_DB_PATH)
 
 def get_user_from_db(username: str) -> Optional[UserInDB]:
     conn = get_db_conn()
     cur = conn.cursor()
-    cur.execute("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, hashed_password TEXT, role TEXT, disabled INTEGER DEFAULT 0)")
-    cur.execute("SELECT username, hashed_password, role, disabled FROM users WHERE username = ?", (username,))
+    cur.execute("""CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, hashed_password TEXT NOT NULL, role TEXT NOT NULL, disabled INTEGER DEFAULT 0)""")
+    cur.execute("""SELECT username, hashed_password, role, disabled FROM users WHERE username = ?""", (username,))
     row = cur.fetchone()
     conn.close()
     if not row:
@@ -55,10 +55,14 @@ def get_user_from_db(username: str) -> Optional[UserInDB]:
     return UserInDB(username=row[0], hashed_password=row[1], role=row[2], disabled=bool(row[3]))
 
 def create_user_db(username: str, password: str, role: str = "reviewer"):
+    """Create a new user in the database"""
+    # ✅ FIX 4: Limit password length to 72 bytes for bcrypt
+    if len(password) > 72:
+        password = password[:72]
     hashed = pwd_context.hash(password)
     conn = get_db_conn()
     cur = conn.cursor()
-    cur.execute("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, hashed_password TEXT, role TEXT, disabled INTEGER DEFAULT 0)")
+    cur.execute("CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, hashed_password TEXT NOT NULL, role TEXT NOT NULL, disabled INTEGER DEFAULT 0)")
     try:
         cur.execute("INSERT INTO users (username, hashed_password, role) VALUES (?, ?, ?)",
                     (username, hashed, role))
@@ -70,17 +74,26 @@ def create_user_db(username: str, password: str, role: str = "reviewer"):
 
 # --- Auth helpers
 def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify plain password against hashed password"""
+    try:
+        # ✅ FIX 5: Truncate password to 72 bytes for bcrypt validation
+        if len(plain_password) > 72:
+            plain_password = plain_password[:72]
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception as e:
+        print(f"❌ Password verification error: {e}")
+        return False
+  
 
 def authenticate_user(username: str, password: str):
     user = get_user_from_db(username)
     if not user:
-        return None
+        return False
     if not verify_password(password, user.hashed_password):
-        return None
+        return False
     return user
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+def create_access_token(data: dict, expires_delta: Optional[timedelta] |None= None):
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
@@ -120,12 +133,18 @@ async def get_current_active_user(current_user: UserInDB = Depends(get_current_u
 # --- Token endpoint
 @router.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+     
+    
+    print("Username received:", form_data.username)
+    print("Password received:", form_data.password)
+
     user = authenticate_user(form_data.username, form_data.password)
+    print("Auth result:", user)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
+            #headers={"WWW-Authenticate": "Bearer"},
         )
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(

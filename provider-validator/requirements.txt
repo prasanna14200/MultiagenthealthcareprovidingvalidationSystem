@@ -35,3 +35,14 @@ pillow
 pytesseract
 pdf2image
 python-multipart
+
+
+# test / dev dependencies
+pytest
+pytest-asyncio
+httpx
+pytest-mock
+requests
+python-dotenv
+coverage
+flake8
