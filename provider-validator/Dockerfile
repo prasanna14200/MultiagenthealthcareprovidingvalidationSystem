@@ -8,17 +8,19 @@ WORKDIR /app
 
 COPY pyproject.toml poetry.lock* /app/
 # If you use requirements.txt instead:
-COPY requirements.txt /app/
+COPY ./requirements.txt /app/requirements.txt
 
 # Install system deps for psycopg2
 RUN apt-get update && apt-get install -y build-essential libpq-dev gcc curl && rm -rf /var/lib/apt/lists/*
 
 # Install python deps
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip
+RUN pip install --prefer-binary --no-cache-dir --timeout 1000 -r /app/requirements.txt
+RUN pip install --no-cache-dir --timeout 1000 -r /app/requirements.txt
 
 # Copy source
-COPY . /app
+COPY ./src /app/src
 
 # Expose port (uvicorn)
 EXPOSE 8000

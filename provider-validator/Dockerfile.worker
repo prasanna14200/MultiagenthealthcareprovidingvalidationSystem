@@ -1,19 +1,18 @@
-# Dockerfile.worker
+
 FROM python:3.12-slim
 
-RUN useradd --create-home --shell /bin/bash appuser
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc libpq-dev curl git \
+RUN apt-get update && apt-get install -y \
+    build-essential gcc libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ./requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY requirements.txt .
 
-COPY ./src /app/src
-COPY ./data /app/data
+RUN pip install --upgrade pip \
+ && pip install --default-timeout=1000 --retries 10 --no-cache-dir -r requirements.txt
 
-USER appuser
+COPY src ./src
+COPY data ./data
 
-CMD ["celery", "-A", "src.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+CMD ["celery","-A","src.celery_app","worker","--loglevel=info"]
